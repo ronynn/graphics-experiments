@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Above the Clouds</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    overflow: hidden; background: #05070f;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+    touch-action: none;
+  }
+  #sky { display: block; width: 100vw; height: 100vh; }
+
+  #ui {
+    position: fixed;
+    left: 50%;
+    top: max(18px, env(safe-area-inset-top));
+    transform: translate(-50%, -16px) scale(.96);
+    display: flex; flex-direction: row; align-items: center; gap: 11px;
+    padding: 8px 15px;
+    background: rgba(8,12,22,.46);
+    backdrop-filter: blur(16px) saturate(1.35);
+    -webkit-backdrop-filter: blur(16px) saturate(1.35);
+    border: 1px solid rgba(255,255,255,.14);
+    border-radius: 999px;
+    color: #dfe7f5;
+    font-size: 12px;
+    letter-spacing: .03em;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .5s ease, transform .5s cubic-bezier(.2,.9,.3,1);
+    user-select: none; -webkit-user-select: none;
+    z-index: 10;
+  }
+  #ui.visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0) scale(1);
+  }
+
+  #ui button {
+    all: unset; cursor: pointer;
+    width: 24px; height: 24px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: rgba(255,255,255,.1);
+    font-size: 10px; line-height: 1;
+    transition: background .15s;
+  }
+  #ui button:hover { background: rgba(255,255,255,.24); }
+
+  #time {
+    -webkit-appearance: none; appearance: none;
+    width: 130px; height: 3px;
+    background: rgba(255,255,255,.2);
+    border-radius: 2px; outline: none; cursor: pointer;
+    touch-action: none;
+  }
+  #time::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 13px; height: 13px; border-radius: 50%;
+    background: #cfe0ff; cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(160,200,255,.18);
+  }
+  #time::-moz-range-thumb {
+    width: 13px; height: 13px; border: none; border-radius: 50%;
+    background: #cfe0ff; cursor: pointer;
+  }
+
+  #clock {
+    font-variant-numeric: tabular-nums;
+    min-width: 40px; text-align: center; opacity: .85;
+    cursor: pointer;
+  }
+  #clock:hover { opacity: 1; }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<div id="ui">
+  <button id="play" aria-label="Play / pause">❚❚</button>
+  <input id="time" type="range" min="0" max="1" step="0.00005" value="0">
+  <span id="clock" title="Click to sync to current time">00:00</span>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ═══════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════ */
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const mixRGB = (a, b, t) => [
+  a[0] + (b[0] - a[0]) * t,
+  a[1] + (b[1] - a[1]) * t,
+  a[2] + (b[2] - a[2]) * t,
+];
+const rgb = c => `rgb(${c[0] | 0},${c[1] | 0},${c[2] | 0})`;
+
+/* ═══════════════════════════════════════════════════════════════
+   3D VALUE NOISE  (pre-baked lattice, trilinear fetch)
+   ═══════════════════════════════════════════════════════════════ */
+const NS  = 64;
+const NS2 = NS * NS;
+const NSM = NS - 1;
+
+const noiseTex = new Float32Array(NS * NS * NS);
+{
+  let seed = 20240517 >>> 0;
+  for (let i = 0; i < noiseTex.length; i++) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    noiseTex[i] = seed / 4294967296;
+  }
+}
+
+function noise3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  const w = zf * zf * (3 - 2 * zf);
+
+  const X0 = xi & NSM, X1 = (xi + 1) & NSM;
+  const Y0 = (yi & NSM) * NS, Y1 = ((yi + 1) & NSM) * NS;
+  const Z0 = (zi & NSM) * NS2, Z1 = ((zi + 1) & NSM) * NS2;
+
+  const a = noiseTex[Z0 + Y0 + X0], b = noiseTex[Z0 + Y0 + X1];
+  const c = noiseTex[Z0 + Y1 + X0], d = noiseTex[Z0 + Y1 + X1];
+  const e = noiseTex[Z1 + Y0 + X0], f = noiseTex[Z1 + Y0 + X1];
+  const g = noiseTex[Z1 + Y1 + X0], h = noiseTex[Z1 + Y1 + X1];
+
+  const ab = a + (b - a) * u, cd = c + (d - c) * u;
+  const ef = e + (f - e) * u, gh = g + (h - g) * u;
+  const abcd = ab + (cd - ab) * v, efgh = ef + (gh - ef) * v;
+  return abcd + (efgh - abcd) * w;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   PALETTES  (keyed by sun elevation: -1 midnight … +1 noon)
+   ═══════════════════════════════════════════════════════════════ */
+const SKY_STOPS = [
+  { e: -1.00, top: [  4,   8,  20], mid: [  8,  12,  30], hor: [ 15,  20,  40] },
+  { e: -0.40, top: [  8,  12,  30], mid: [ 14,  20,  45], hor: [ 25,  32,  60] },
+  { e: -0.15, top: [ 20,  30,  65], mid: [ 45,  50,  90], hor: [ 90,  75, 100] },
+  { e: -0.04, top: [ 50,  70, 130], mid: [110, 100, 140], hor: [200, 120, 110] },
+  { e:  0.02, top: [ 75, 115, 180], mid: [160, 140, 160], hor: [255, 160, 110] },
+  { e:  0.10, top: [ 70, 125, 200], mid: [140, 170, 210], hor: [230, 200, 190] },
+  { e:  0.30, top: [ 60, 120, 205], mid: [120, 170, 220], hor: [200, 215, 230] },
+  { e:  0.60, top: [ 48, 110, 200], mid: [100, 160, 220], hor: [185, 208, 235] },
+  { e:  1.00, top: [ 40, 100, 195], mid: [ 95, 155, 220], hor: [175, 205, 235] },
+];
+
+const CLOUD_STOPS = [
+  { e: -1.00, lit: [ 26,  36,  66], sh: [  7,   9,  20] },
+  { e: -0.40, lit: [ 36,  46,  80], sh: [ 10,  13,  28] },
+  { e: -0.15, lit: [ 66,  72, 108], sh: [ 18,  21,  42] },
+  { e: -0.04, lit: [140, 105, 120], sh: [ 34,  34,  62] },
+  { e:  0.02, lit: [255, 176, 124], sh: [ 62,  52,  80] },
+  { e:  0.10, lit: [255, 224, 194], sh: [ 96, 102, 132] },
+  { e:  0.30, lit: [255, 250, 246], sh: [138, 148, 176] },
+  { e:  0.60, lit: [255, 255, 255], sh: [152, 162, 192] },
+  { e:  1.00, lit: [255, 255, 255], sh: [158, 168, 198] },
+];
+
+function sampleStops(stops, e) {
+  const first = stops[0], last = stops[stops.length - 1];
+  if (e <= first.e) return first;
+  if (e >= last.e) return last;
+
+  let lo = 0, hi = stops.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (stops[mid].e <= e) lo = mid; else hi = mid;
+  }
+  const a = stops[lo], b = stops[hi];
+  const t = (e - a.e) / (b.e - a.e);
+
+  const out = { e };
+  for (const key in a) {
+    if (key === 'e') continue;
+    out[key] = (a[key] && b[key]) ? mixRGB(a[key], b[key], t) : a[key];
+  }
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCENE CONSTANTS
+   ═══════════════════════════════════════════════════════════════ */
+const HORIZON_V   = 0.34;    // screen-y of the horizon (0..1)
+const K_PROJ      = 1.15;    // projection scale  (≈ 2·tan(fovY/2))
+
+const CLOUD_TOP_Y = -0.55;   // cloud deck ceiling  (camera sits at y = 0)
+const CLOUD_BOT_Y = -1.15;   // cloud deck floor
+const CLOUD_TH    = CLOUD_TOP_Y - CLOUD_BOT_Y;
+
+const NF      = 2.20;        // horizontal noise frequency
+const MARCH   = 13;          // view-ray steps
+const MAX_DT  = 0.10;        // clamp on step length (world units)
+const SIGMA   = 3.50;        // extinction coefficient
+
+/* ═══════════════════════════════════════════════════════════════
+   CANVAS + BUFFERS
+   ═══════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('sky');
+const ctx    = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1;
+let CW = 0, CH = 0;
+let cloudCanvas = null, cloudCtx = null, cloudImg = null;
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // Fixed pixel budget keeps the CPU cost predictable on every device.
+  const BUDGET = 12000;
+  const ar = W / H;
+  CW = clamp(Math.round(Math.sqrt(BUDGET * ar)), 80, 220);
+  CH = clamp(Math.round(BUDGET / CW), 50, 170);
+
+  cloudCanvas = document.createElement('canvas');
+  cloudCanvas.width  = CW;
+  cloudCanvas.height = CH;
+  cloudCtx = cloudCanvas.getContext('2d');
+  cloudImg = cloudCtx.createImageData(CW, CH);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CLOUD DENSITY FIELD  —  fluffy cumulus, slow drift
+   ═══════════════════════════════════════════════════════════════ */
+function cloudDensity(x, y, z, t) {
+  const h = (y - CLOUD_BOT_Y) / CLOUD_TH;    // 0 = deck bottom, 1 = deck top
+  if (h <= 0 || h >= 1) return 0;
+
+  /* ── very slow, unified drift ─────────────────────────── */
+  const spd = 0.045;
+  const d1  = t * spd;
+  const d2  = d1 * 2.4;
+  const d3  = d1 * 5.0;
+
+  const nx = x * NF;
+  const nz = z * NF;
+  const ny = h * 3.2;
+
+  /* ── base mass field (also shapes the cloud-top envelope) ── */
+  const base = noise3(nx + d1, ny * 0.70, nz + d1 * 0.45);
+
+  /* ── variable cloud-top height → distinct puffy tops ────── */
+  const topH = 0.52 + 0.46 * base;
+  if (h > topH) return 0;
+  const hN = h / topH;
+
+  /* ── vertical profile (flat base, rounded crown) ─────────── */
+  let vp;
+  if (hN < 0.32) {
+    vp = hN / 0.32;
+    vp = vp * vp * (3 - 2 * vp);
+  } else if (hN > 0.76) {
+    const u = (1 - hN) / 0.24;
+    vp = u * u * (3 - 2 * u);
+  } else {
+    vp = 1;
+  }
+
+  /* ── billow octaves (cauliflower structure) ─────────────── */
+  const by = hN * 3.0;
+
+  const b1 = 1 - Math.abs(2 * noise3(
+    nx * 2.4 + 13.7 + d2,
+    by * 2.4 + 4.1,
+    nz * 2.4 + 21.3 + d2 * 0.4
+  ) - 1);
+
+  const b2 = 1 - Math.abs(2 * noise3(
+    nx * 5.0 + 37.1 + d3,
+    by * 5.0 + 11.3,
+    nz * 5.0 + 47.9 + d3 * 0.4
+  ) - 1);
+
+  /* ── combine & sharp threshold ──────────────────────────── */
+  let n = base * 0.30 + b1 * 0.46 + b2 * 0.24;
+
+  let s = (n - 0.49) * 7.2;
+  if (s <= 0) return 0;
+  if (s >= 1) s = 1;
+  else s = s * s * (3 - 2 * s);
+
+  return s * vp;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CLOUD RENDERER — volumetric raymarch through the deck
+   ═══════════════════════════════════════════════════════════════ */
+function renderClouds(sx, sy, sz, lit, sh, hor, t) {
+  const data = cloudImg.data;
+  const as = Math.min(W / H, 1.9);
+
+  const lR = lit[0], lG = lit[1], lB = lit[2];
+  const sR = sh[0],  sG = sh[1],  sB = sh[2];
+  const hR = hor[0], hG = hor[1], hB = hor[2];
+
+  const sySafe = Math.max(sy, 0.12);
+
+  let k = 0;
+  for (let py = 0; py < CH; py++) {
+    const v = (py + 0.5) / CH;
+    const ndy = (HORIZON_V - v) * K_PROJ;
+    const below = ndy < -0.0009;
+
+    // aerial haze — 1 at horizon, 0 further down
+    let hz = 0;
+    if (below) {
+      const dv = v - HORIZON_V;
+      hz = dv >= 0.34 ? 0 : 1 - smoothstep(0, 0.34, dv);
+    }
+
+    for (let px = 0; px < CW; px++, k += 4) {
+      if (!below) { data[k + 3] = 0; continue; }
+
+      const u = (px + 0.5) / CW;
+      const ndx = (u - 0.5) * K_PROJ * as;
+
+      const invN = 1 / ndy;
+      const t0 = CLOUD_TOP_Y * invN;           // entry point (positive)
+      const t1 = CLOUD_BOT_Y * invN;           // exit point (larger, positive)
+
+      const vl = Math.sqrt(ndx * ndx + ndy * ndy + 1);
+      // view-ray → sun-ray optical depth conversion factor
+      const pf = (-ndy) / (vl * sySafe);
+
+      let dt = (t1 - t0) / MARCH;
+      if (dt > MAX_DT) dt = MAX_DT;
+
+      let trans = 1, aR = 0, aG = 0, aB = 0, tau = 0;
+
+      for (let i = 0; i < MARCH; i++) {
+        const tt = t0 + (i + 0.5) * dt;
+        const x = ndx * tt, y = ndy * tt, z = tt;
+        const d = cloudDensity(x, y, z, t);
+
+        if (d > 0.004) {
+          // sun-ray transmittance at this sample
+          let light = Math.exp(-tau * pf * 1.15);
+
+          // angle between view-ray and sun-ray
+          const dot = (ndx * sx + ndy * sy + sz) / vl;
+          const d2 = dot > 0 ? dot * dot : 0;
+          const d3 = d2 * dot;
+          const d6 = d2 * d2 * d2;
+          const d9 = d6 * d3;
+
+          // broad forward glow + tight silver lining
+          light = light * (1 - 0.40 * d3) + d3 * 0.62 + d9 * 0.40;
+          if (light > 1.08) light = 1.08;
+          if (light < 0)    light = 0;
+
+          const a = 1 - Math.exp(-d * dt * SIGMA);
+          const w = trans * a;
+
+          aR += w * (sR + (lR - sR) * light);
+          aG += w * (sG + (lG - sG) * light);
+          aB += w * (sB + (lB - sB) * light);
+          trans -= w;
+          if (trans < 0.012) { tau += d * dt; break; }
+        }
+        tau += d * dt;
+      }
+
+      const alpha = 1 - trans;
+      if (alpha < 0.004) { data[k + 3] = 0; continue; }
+
+      const inv = 1 / alpha;
+      let cr = aR * inv, cg = aG * inv, cb = aB * inv;
+
+      // blend into horizon haze
+      cr += (hR - cr) * hz;
+      cg += (hG - cg) * hz;
+      cb += (hB - cb) * hz;
+
+      data[k    ] = cr;
+      data[k + 1] = cg;
+      data[k + 2] = cb;
+      data[k + 3] = alpha * (1 - hz * 0.40) * 255;
+    }
+  }
+
+  cloudCtx.putImageData(cloudImg, 0, 0);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TIME MODEL  —  sky time tracks the real local clock
+   ═══════════════════════════════════════════════════════════════ */
+let timeOffset = 0;        // added to the real time-of-day (0..1)
+let paused     = false;
+let frozenTime = 0;
+let dayTime    = 0;
+
+function realDayTime() {
+  const d = new Date();
+  return (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds() +
+          d.getMilliseconds() / 1000) / 86400;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DRAW
+   ═══════════════════════════════════════════════════════════════ */
+function draw() {
+  const theta   = (dayTime - 0.25) * TAU;
+  const sunElev = Math.sin(theta);
+
+  const skyPal   = sampleStops(SKY_STOPS,   sunElev);
+  const cloudPal = sampleStops(CLOUD_STOPS, sunElev);
+
+  const as = Math.min(W / H, 1.9);
+
+  /* ── 1. sky gradient ─────────────────────────────────────── */
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0,                  rgb(skyPal.top));
+  g.addColorStop(HORIZON_V * 0.62,   rgb(skyPal.mid));
+  g.addColorStop(HORIZON_V,          rgb(skyPal.hor));
+  g.addColorStop(1,                  rgb(mixRGB(skyPal.hor, [0, 0, 0], 0.34)));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ── 2. sun direction ────────────────────────────────────── */
+  let sx = Math.cos(theta);
+  let sy = Math.sin(theta);
+  let sz = 1.0;
+  const sl = Math.sqrt(sx * sx + sy * sy + sz * sz);
+  sx /= sl; sy /= sl; sz /= sl;
+
+  /* ── 3. sun glow (drawn behind the clouds) ───────────────── */
+  {
+    const su = ((sx / sz) / (K_PROJ * as) + 0.5) * W;
+    const sv = (HORIZON_V - (sy / sz) / K_PROJ) * H;
+    const r  = Math.max(W, H) * 0.62;
+    const gg = ctx.createRadialGradient(su, sv, 0, su, sv, r);
+    const warm = clamp(1 - Math.abs(sunElev) * 1.4, 0, 1);
+    const a0 = 0.30 + 0.34 * warm;
+    gg.addColorStop(0,    `rgba(255,${210 + 40 * (1 - warm) | 0},${170 + 70 * (1 - warm) | 0},${a0})`);
+    gg.addColorStop(0.28, `rgba(255,205,165,${a0 * 0.30})`);
+    gg.addColorStop(1,    'rgba(255,200,160,0)');
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  /* ── 4. cloud buffer (throttled) ─────────────────────────── */
+  const cloudClock = performance.now();
+  if (cloudClock - lastCloudRender >= CLOUD_INTERVAL) {
+    lastCloudRender = cloudClock;
+    renderClouds(sx, sy, sz, cloudPal.lit, cloudPal.sh, skyPal.hor,
+                 cloudClock / 1000);
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(cloudCanvas, 0, 0, CW, CH, 0, 0, W, H);
+
+  /* ── 5. vignette ─────────────────────────────────────────── */
+  const vg = ctx.createRadialGradient(
+    W * 0.5, H * 0.55, Math.min(W, H) * 0.34,
+    W * 0.5, H * 0.55, Math.max(W, H) * 0.82
+  );
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.26)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOOP
+   ═══════════════════════════════════════════════════════════════ */
+let lastCloudRender = -1e9;
+const CLOUD_INTERVAL = 1000 / 30;      // cloud buffer refresh at ≤ 30 fps
+let clockCache = '';
+
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  if (!paused) {
+    dayTime = (realDayTime() + timeOffset + 1) % 1;
+  } else {
+    dayTime = frozenTime;
+  }
+
+  draw();
+
+  if (!dragging) timeEl.value = dayTime;
+
+  const totalMin = Math.floor(dayTime * 1440);
+  const hh = String(Math.floor(totalMin / 60) % 24).padStart(2, '0');
+  const mm = String(totalMin % 60).padStart(2, '0');
+  const str = hh + ':' + mm;
+  if (str !== clockCache) {
+    clockCache = str;
+    clockEl.textContent = str;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UI — long-press the upper half for 3 s to reveal, auto-hide 5 s
+   ═══════════════════════════════════════════════════════════════ */
+const ui      = document.getElementById('ui');
+const clockEl = document.getElementById('clock');
+const timeEl  = document.getElementById('time');
+const playEl  = document.getElementById('play');
+
+let pressTimer = 0;
+let hideTimer  = 0;
+let pressStart = null;
+let dragging   = false;
+
+function bumpHide() {
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => ui.classList.remove('visible'), 5000);
+}
+
+function showUI() {
+  ui.classList.add('visible');
+  bumpHide();
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch (e) {} }
+}
+
+canvas.addEventListener('pointerdown', e => {
+  if (e.clientY > window.innerHeight * 0.5) return;   // upper half only
+  pressStart = { x: e.clientX, y: e.clientY };
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => { pressTimer = 0; showUI(); }, 3000);
+});
+
+canvas.addEventListener('pointermove', e => {
+  if (!pressStart) return;
+  if (Math.hypot(e.clientX - pressStart.x, e.clientY - pressStart.y) > 12) {
+    clearTimeout(pressTimer);
+    pressTimer = 0;
+    pressStart = null;
+  }
+});
+
+['pointerup', 'pointercancel'].forEach(t =>
+  canvas.addEventListener(t, () => {
+    clearTimeout(pressTimer);
+    pressTimer = 0;
+    pressStart = null;
+  })
+);
+
+// any interaction with the panel keeps it alive
+ui.addEventListener('pointerdown', bumpHide);
+ui.addEventListener('input', bumpHide);
+
+playEl.addEventListener('click', () => {
+  if (paused) {
+    paused = false;
+  } else {
+    frozenTime = dayTime;
+    paused = true;
+  }
+  playEl.textContent = paused ? '▶' : '❚❚';
+  bumpHide();
+});
+
+timeEl.addEventListener('input', () => {
+  dragging = true;
+  paused = false;
+  playEl.textContent = '❚❚';
+  const val = parseFloat(timeEl.value) || 0;
+  timeOffset = val - realDayTime();     // sky time advances in real time from here
+  dayTime = val;
+  bumpHide();
+});
+
+timeEl.addEventListener('change', () => { dragging = false; });
+
+clockEl.addEventListener('click', () => {
+  timeOffset = 0;                        // re-sync with the real clock
+  paused = false;
+  playEl.textContent = '❚❚';
+  bumpHide();
+});
+
+/* ═══════════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════════ */
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 140));
+
+resize();
+dayTime = realDayTime();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

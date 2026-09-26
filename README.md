@@ -2,50 +2,16 @@
 Fiddling around with shaders and graphics libraries
 <hr>
 
-Q5 is a minimalist port of P5.js library of the Processing Foundation.
+Day Night Cycles, the second example forms the core of [atmos-xr](https://github.com/ronynn/atmos-xr), an android livewallpaper app, long press top region of the page for 4 seconds to move through time:
+- <https://ronynn.github.io/prototypes/daynight.html>
+- <https://ronynn.github.io/prototypes/dawndusk.html>
 
-- [Birb](/q5/birb.html)
+Q5 is a minimalist WEBGPU supported port of P5.js library of the Processing Foundation: [Q5 Examples](https://ronynn.github.io/prototypes/q5/index.html)
 
-- [Boxes on a line](/q5/box-on-a-line.html)
+These examples were tested on OpenGL-ES: [GLSL Runner](https://ronynn.github.io/prototypes/glsl/index.html)
 
-- [Bubble-sort](/q5/bubble-sort.html)
+Homepage Globe: <https://ronynn.github.io/prototypes/globe.html>
 
-- [Circles](/q5/circles.html)
-
-- [Concentric](/q5/concentric.html)
-
-- [Fireworks](/q5/fireworks.html)
-
-- [Neuronal](/q5/neuronal.html)
-
-- [Pendulum](/q5/pendulum.html)
-
-- [Quick-sort](/q5/quick-sort.html)
-
-- [Random-walk](/q5/random-walk.html)
-
-- [Scribble](/q5/scribble.html)
-
-- [Starfield](/q5/starfield.html)
-
-- [Tic-Tac-Toe](/q5/tic-tac-toe.html)
-
-<hr>
-
-These examples were tested on OpenGL-ES.
-
-
-- [Blinking Shadow](/glsl/blinking_shadow.glsl)
-
-- [Dot on Gradient](/glsl/dot_on_gradient.glsl)
-
-- [Game of Life](/glsl/game_of_life.glsl)
-
-- [Gradient Click](/glsl/gradient_click.glsl)
-
-- [Gradients](/glsl/gradients.glsl)
-
-- [Water Droplet Simulation](/glsl/water_droplet_sim.glsl)
 
 <hr>
 

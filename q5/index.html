@@ -1,0 +1,111 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>q5 runner</title>
+<style>
+  body { font: 14px/1.6 monospace; margin: 20px; background: #111; color: #ddd; }
+  a { color: #6cf; cursor: pointer; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  a.active { color: #fff; font-weight: bold; }
+  #bar .sep { color: #444; }
+  #stage {
+    display: block;
+    width: min(90vmin, 700px);
+    aspect-ratio: 1 / 1;
+    background: #000;
+    margin-top: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  #stage iframe {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
+    background: #000;
+  }
+  pre { color: #f88; white-space: pre-wrap; max-width: 700px; }
+</style>
+</head>
+<body>
+
+<div id="bar">
+  <a data-sketch="birb.js">birb</a> <span class="sep">·</span>
+  <a data-sketch="box-on-a-line.js">box-on-a-line</a> <span class="sep">·</span>
+  <a data-sketch="bubble-sort.js">bubble-sort</a> <span class="sep">·</span>
+  <a data-sketch="circles.js">circles</a> <span class="sep">·</span>
+  <a data-sketch="concentric.js">concentric</a> <span class="sep">·</span>
+  <a data-sketch="fireworks.js">fireworks</a> <span class="sep">·</span>
+  <a data-sketch="flapq.html">flapq</a> <span class="sep">·</span>
+  <a data-sketch="neuronal.js">neuronal</a> <span class="sep">·</span>
+  <a data-sketch="pendulum.js">pendulum</a> <span class="sep">·</span>
+  <a data-sketch="quick-sort.js">quick-sort</a> <span class="sep">·</span>
+  <a data-sketch="random-walk.js">random-walk</a> <span class="sep">·</span>
+  <a data-sketch="scribble.js">scribble</a> <span class="sep">·</span>
+  <a data-sketch="starfield.js">starfield</a>
+</div>
+
+<div id="stage"></div>
+<pre id="err"></pre>
+
+<script>
+(function () {
+  'use strict';
+
+  const stage = document.getElementById('stage');
+  const errEl = document.getElementById('err');
+  const base  = new URL('.', location.href).href;
+  let current = null;
+
+  function load(file) {
+    errEl.textContent = '';
+    current = file;
+
+    // Wipe the stage the safe way (works on every browser).
+    while (stage.firstChild) {
+      stage.removeChild(stage.firstChild);
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('allow', 'autoplay; fullscreen');
+
+    if (/\.html?$/i.test(file)) {
+      // Standalone HTML — load it directly.
+      iframe.src = file;
+    } else {
+      // Plain .js sketch — wrap it with q5.min.js via srcdoc.
+      // <base> is required so "q5.min.js" and the sketch path resolve.
+      iframe.srcdoc =
+        '<!doctype html><html><head><meta charset="utf-8">' +
+        '<base href="' + base + '">' +
+        '<style>html,body{margin:0;padding:0;overflow:hidden;background:#000}</style>' +
+        '</head><body>' +
+        '<script src="q5.min.js"><\/script>' +
+        '<script src="' + file + '"><\/script>' +
+        '</body></html>';
+    }
+
+    stage.appendChild(iframe);
+
+    document.querySelectorAll('a[data-sketch]').forEach(a =>
+      a.classList.toggle('active', a.dataset.sketch === file));
+
+    document.title = 'q5 · ' + file.replace(/\.(js|html?)$/i, '');
+  }
+
+  document.querySelectorAll('a[data-sketch]').forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      load(a.dataset.sketch);   // clicking the active link reloads it
+    });
+  });
+
+  const first = document.querySelector('a[data-sketch]');
+  if (first) load(first.dataset.sketch);
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Canvas Sky — Day/Night Cloud Simulation</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    overflow: hidden; background: #05070f;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #sky { display: block; width: 100vw; height: 100vh; }
+
+  #ui {
+    position: fixed; left: 50%; bottom: max(14px, env(safe-area-inset-bottom));
+    transform: translateX(-50%);
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 14px;
+    background: rgba(8,12,22,.42);
+    backdrop-filter: blur(14px) saturate(1.3);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3);
+    border: 1px solid rgba(255,255,255,.13);
+    border-radius: 999px;
+    color: #dfe7f5;
+    font-size: 12px; letter-spacing: .03em;
+    opacity: .45; transition: opacity .25s ease;
+    user-select: none; -webkit-user-select: none;
+  }
+  #ui:hover, #ui:focus-within { opacity: 1; }
+
+  #ui button {
+    all: unset; cursor: pointer;
+    width: 22px; height: 22px;
+    display: grid; place-items: center;
+    border-radius: 50%;
+    background: rgba(255,255,255,.1);
+    font-size: 9px; line-height: 1;
+    transition: background .15s;
+  }
+  #ui button:hover { background: rgba(255,255,255,.22); }
+
+  #time {
+    -webkit-appearance: none; appearance: none;
+    width: 120px; height: 3px;
+    background: rgba(255,255,255,.2);
+    border-radius: 2px; outline: none; cursor: pointer;
+  }
+  #time::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #cfe0ff; cursor: pointer;
+    box-shadow: 0 0 0 3px rgba(160,200,255,.18);
+  }
+  #time::-moz-range-thumb {
+    width: 12px; height: 12px; border: none; border-radius: 50%;
+    background: #cfe0ff; cursor: pointer;
+  }
+
+  #clock {
+    font-variant-numeric: tabular-nums;
+    min-width: 38px; text-align: center; opacity: .85;
+  }
+  @media (max-width: 420px) { #time { width: 78px; } }
+</style>
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<div id="ui">
+  <button id="play" aria-label="Play / pause">❚❚</button>
+  <input id="time" type="range" min="0" max="1" step="0.0002" value="0.28">
+  <span id="clock">00:00</span>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ═══════════════════════════════════════════════════════════════
+   MATH HELPERS
+   ═══════════════════════════════════════════════════════════════ */
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
+const lerp  = (a, b, t) => a + (b - a) * t;
+
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+
+const mixRGB = (a, b, t) => [
+  a[0] + (b[0] - a[0]) * t,
+  a[1] + (b[1] - a[1]) * t,
+  a[2] + (b[2] - a[2]) * t,
+];
+
+const rgb  = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+const rgba = (c, a) => `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+
+/* ═══════════════════════════════════════════════════════════════
+   VALUE NOISE  +  FBM
+   ═══════════════════════════════════════════════════════════════ */
+function hash2(x, y) {
+  let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1);
+  h = Math.imul(h ^ (h >>> 15), 0x2545f491);
+  h ^= h >>> 13;
+  return (h >>> 0) * 2.3283064365386963e-10;   // 1 / 2^32
+}
+
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi,     yi    );
+  const b = hash2(xi + 1, yi    );
+  const c = hash2(xi,     yi + 1);
+  const d = hash2(xi + 1, yi + 1);
+  const ab = a + (b - a) * u;
+  const cd = c + (d - c) * u;
+  return ab + (cd - ab) * v;
+}
+
+function fbm(x, y, octaves) {
+  let sum = 0, amp = 0.5, freq = 1, norm = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum  += amp * vnoise(x * freq, y * freq);
+    norm += amp;
+    amp  *= 0.5;
+    freq *= 2;
+  }
+  return sum / norm;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   COLOR PALETTES  (keyed by sun elevation, -1 = midnight … +1 = noon)
+   ═══════════════════════════════════════════════════════════════ */
+const SKY_STOPS = [
+  { e: -1.00, top: [  4,   6,  18], mid: [  7,  10,  30], hor: [ 14,  18,  38] },
+  { e: -0.40, top: [  5,   8,  26], mid: [ 11,  16,  44], hor: [ 24,  28,  60] },
+  { e: -0.18, top: [ 12,  18,  50], mid: [ 30,  34,  74], hor: [ 66,  52,  86] },
+  { e: -0.06, top: [ 28,  42,  96], mid: [ 74,  66, 112], hor: [148,  92, 100] },
+  { e:  0.02, top: [ 54,  84, 152], mid: [138, 116, 142], hor: [255, 148,  84] },
+  { e:  0.12, top: [ 68, 116, 188], mid: [152, 156, 180], hor: [255, 192, 138] },
+  { e:  0.30, top: [ 64, 122, 210], mid: [124, 168, 222], hor: [214, 218, 222] },
+  { e:  0.60, top: [ 48, 108, 204], mid: [104, 158, 224], hor: [188, 212, 238] },
+  { e:  1.00, top: [ 40,  96, 198], mid: [ 96, 152, 222], hor: [178, 206, 236] },
+];
+
+const CLOUD_STOPS = [
+  { e: -1.00, lit: [ 30,  36,  56], sh: [ 11,  13,  26] },
+  { e: -0.40, lit: [ 36,  42,  66], sh: [ 13,  15,  30] },
+  { e: -0.18, lit: [ 56,  58,  88], sh: [ 22,  24,  46] },
+  { e: -0.06, lit: [110,  88, 112], sh: [ 40,  40,  70] },
+  { e:  0.02, lit: [255, 172, 122], sh: [ 68,  60,  92] },
+  { e:  0.12, lit: [255, 224, 194], sh: [106, 106, 134] },
+  { e:  0.30, lit: [255, 255, 255], sh: [148, 156, 178] },
+  { e:  1.00, lit: [255, 255, 255], sh: [166, 176, 198] },
+];
+
+/* ─────────────────────────────────────────────────────────────
+   FIX: only interpolate keys that exist on every stop object.
+   Sky stops have { top, mid, hor }; cloud stops have { lit, sh }.
+   Interpolating a missing key crashed inside mixRGB().
+   ───────────────────────────────────────────────────────────── */
+function sampleStops(stops, e) {
+  const first = stops[0], last = stops[stops.length - 1];
+  if (e <= first.e) return first;
+  if (e >= last.e)  return last;
+
+  let lo = 0, hi = stops.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (stops[mid].e <= e) lo = mid; else hi = mid;
+  }
+  const a = stops[lo], b = stops[hi];
+  const t = (e - a.e) / (b.e - a.e);
+
+  const out = { e };
+  for (const key in a) {
+    if (key === 'e') continue;
+    out[key] = (a[key] && b[key]) ? mixRGB(a[key], b[key], t) : a[key];
+  }
+  return out;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('sky');
+const ctx    = canvas.getContext('2d', { alpha: false });
+
+const clockEl = document.getElementById('clock');
+const timeEl  = document.getElementById('time');
+const playEl  = document.getElementById('play');
+
+let W = 0, H = 0, DPR = 1;
+let horizonY = 0;
+let vHorizon = 0.88;
+
+// cloud offscreen buffer
+let CW = 0, CH = 0;
+let cloudCanvas = null, cloudCtx = null, cloudImg = null, densBuf = null;
+
+// starfield (pre-rendered)
+const starCanvas = document.createElement('canvas');
+let starsReady = false;
+
+// time
+let dayTime   = 0.28;       // 0 = midnight · 0.25 = sunrise · 0.5 = noon · 0.75 = sunset
+const DAY_LENGTH = 180;     // seconds per full day
+let playing   = true;
+let lastTs    = 0;
+let clockCache = '';
+
+/* ═══════════════════════════════════════════════════════════════
+   RESIZE
+   ═══════════════════════════════════════════════════════════════ */
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+
+  canvas.width  = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'medium';
+
+  horizonY = H * 0.88;
+  vHorizon = 0.88;
+
+  // --- cloud buffer: fixed pixel budget so perf stays flat across screens
+  const BUDGET = 44000;
+  const ar = W / H;
+  CW = Math.round(Math.sqrt(BUDGET * ar));
+  CH = Math.round(BUDGET / CW);
+  CW = clamp(CW, 96, 420);
+  CH = clamp(CH, 64, 320);
+
+  cloudCanvas = document.createElement('canvas');
+  cloudCanvas.width  = CW;
+  cloudCanvas.height = CH;
+  cloudCtx = cloudCanvas.getContext('2d');
+  cloudImg = cloudCtx.createImageData(CW, CH);
+  densBuf  = new Float32Array(CW * CH);
+
+  buildStars();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   STARFIELD  (pre-rendered once per resize)
+   ═══════════════════════════════════════════════════════════════ */
+function buildStars() {
+  const w = Math.round(W * DPR);
+  const h = Math.round(H * DPR);
+  starCanvas.width  = w;
+  starCanvas.height = h;
+
+  const c = starCanvas.getContext('2d');
+  c.clearRect(0, 0, w, h);
+
+  const count = clamp(Math.round((w * h) / 7000), 140, 700);
+
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * w;
+    const y = Math.pow(Math.random(), 0.85) * h * 0.92;
+
+    const r  = (Math.random() * 0.85 + 0.25) * DPR;
+    const br = Math.random() * 0.65 + 0.35;
+
+    // slight colour variety (blue-white → warm-white)
+    const tint = Math.random();
+    const cr = 255;
+    const cg = 245 + tint * 10;
+    const cb = 235 + tint * 20;
+
+    c.beginPath();
+    c.arc(x, y, r, 0, TAU);
+    c.fillStyle = `rgba(${cr|0},${cg|0},${cb|0},${br})`;
+    c.fill();
+
+    // a few bright ones get a soft halo
+    if (br > 0.88 && r > 0.8) {
+      const g = c.createRadialGradient(x, y, 0, x, y, r * 5);
+      g.addColorStop(0, `rgba(210,225,255,${br * 0.28})`);
+      g.addColorStop(1, 'rgba(210,225,255,0)');
+      c.fillStyle = g;
+      c.beginPath();
+      c.arc(x, y, r * 5, 0, TAU);
+      c.fill();
+    }
+  }
+
+  // fade stars out near the horizon
+  const fade = c.createLinearGradient(0, 0, 0, h);
+  fade.addColorStop(0.00, 'rgba(0,0,0,0)');
+  fade.addColorStop(0.52, 'rgba(0,0,0,0)');
+  fade.addColorStop(0.86, 'rgba(0,0,0,1)');
+  c.globalCompositeOperation = 'destination-out';
+  c.fillStyle = fade;
+  c.fillRect(0, 0, w, h);
+  c.globalCompositeOperation = 'source-over';
+
+  starsReady = true;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CLOUD DENSITY FIELD  (pass 1)
+   ═══════════════════════════════════════════════════════════════ */
+function computeDensity(driftX, driftY) {
+  const dens = densBuf;
+  let i = 0;
+
+  for (let py = 0; py < CH; py++) {
+    const v  = (py + 0.5) / CH;
+    const vv = v < vHorizon ? v / vHorizon : 1;      // 0 = zenith, 1 = horizon
+
+    // perspective: sky-plane projection
+    const dist  = 1 / (0.32 + 0.68 * (1 - vv));
+    const distH = Math.sqrt(dist);
+
+    const ny    = dist * 0.55 + driftY;
+    const nxAmp = distH * 3.0;
+
+    for (let px = 0; px < CW; px++, i++) {
+      const u  = (px + 0.5) / CW;
+      const nx = (u - 0.5) * nxAmp + driftX;
+
+      const n = fbm(nx, ny, 4);
+
+      let d = (n - 0.47) * 2.8;
+      if (d < 0) d = 0; else if (d > 1) d = 1;
+      dens[i] = d * d * (3 - 2 * d);      // smoothstep
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CLOUD SHADING  (pass 2) — writes RGBA into cloudImg
+   ═══════════════════════════════════════════════════════════════ */
+function shadeClouds(sunX, sunY, cloudPal, skyPal, sunElev) {
+  const data = cloudImg.data;
+  const dens = densBuf;
+
+  const LI = cloudPal.lit;
+  const SH = cloudPal.sh;
+  const HZ = skyPal.hor;
+
+  // sun position inside the cloud buffer (clamped so direction stays sane)
+  const sunPX = clamp(sunX / W, -0.4, 1.4) * CW;
+  const sunPY = clamp(sunY / H, -0.6, 1.6) * CH;
+
+  const LIGHT_OFF = 4.0;
+
+  let idx = 0, k = 0;
+
+  for (let py = 0; py < CH; py++) {
+    const v  = (py + 0.5) / CH;
+    const vv = v < vHorizon ? v / vHorizon : 1;
+
+    // aerial haze: clouds dissolve into the horizon
+    const hazeAmt  = smoothstep(0.5, 1.0, vv);
+    const alphaHz  = 1 - hazeAmt * 0.85;
+    const colorHz  = hazeAmt * 0.45;
+
+    const dyB = sunPY - py;
+
+    for (let px = 0; px < CW; px++, idx++, k += 4) {
+      const d = dens[idx];
+
+      // ── direction from this pixel toward the sun
+      const dx  = sunPX - px;
+      const len = Math.sqrt(dx * dx + dyB * dyB) + 0.0001;
+      const ox  = (dx  / len) * LIGHT_OFF;
+      const oy  = (dyB / len) * LIGHT_OFF;
+
+      let sx = (px + ox) | 0;
+      let sy = (py + oy) | 0;
+      if (sx < 0) sx = 0; else if (sx >= CW) sx = CW - 1;
+      if (sy < 0) sy = 0; else if (sy >= CH) sy = CH - 1;
+
+      const dSun = dens[sy * CW + sx];
+
+      // ── lighting model
+      const edge = 1 - smoothstep(0.10, 0.85, d);          // thin edges catch light
+      const trans = 1 - smoothstep(0.10, 0.65, dSun);      // light transmitted toward sun
+      const lit = clamp(edge * 0.35 + trans * 0.85 + 0.18, 0, 1);
+
+      // ── cloud colour
+      let cr = SH[0] + (LI[0] - SH[0]) * lit;
+      let cg = SH[1] + (LI[1] - SH[1]) * lit;
+      let cb = SH[2] + (LI[2] - SH[2]) * lit;
+
+      // blend toward horizon sky colour for depth
+      cr += (HZ[0] - cr) * colorHz;
+      cg += (HZ[1] - cg) * colorHz;
+      cb += (HZ[2] - cb) * colorHz;
+
+      // ── alpha
+      const a = d * 0.92 * alphaHz;
+
+      data[k    ] = cr;
+      data[k + 1] = cg;
+      data[k + 2] = cb;
+      data[k + 3] = a * 255;
+    }
+  }
+
+  cloudCtx.putImageData(cloudImg, 0, 0);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SUN / MOON
+   ═══════════════════════════════════════════════════════════════ */
+function drawSun(x, y, elev) {
+  const warmth = clamp(elev / 0.30, 0, 1);
+  const core = mixRGB([255, 168, 78], [255, 252, 238], warmth);
+  const r = Math.max(13, H * 0.021);
+
+  // wide atmospheric halo
+  const glowR = r * (7 + (1 - warmth) * 8);
+  const g1 = ctx.createRadialGradient(x, y, 0, x, y, glowR);
+  g1.addColorStop(0.00, rgba(core, 0.50));
+  g1.addColorStop(0.10, rgba(core, 0.22));
+  g1.addColorStop(0.32, rgba(core, 0.07));
+  g1.addColorStop(1.00, rgba(core, 0));
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = g1;
+  ctx.beginPath();
+  ctx.arc(x, y, glowR, 0, TAU);
+  ctx.fill();
+
+  // disc
+  const g2 = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g2.addColorStop(0.00, 'rgba(255,255,252,1)');
+  g2.addColorStop(0.55, rgba(core, 0.95));
+  g2.addColorStop(1.00, rgba(core, 0));
+  ctx.fillStyle = g2;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, TAU);
+  ctx.fill();
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function drawMoon(x, y, alpha) {
+  const r = Math.max(9, H * 0.016);
+
+  const g1 = ctx.createRadialGradient(x, y, 0, x, y, r * 6);
+  g1.addColorStop(0.00, `rgba(196,214,255,${0.30 * alpha})`);
+  g1.addColorStop(0.22, `rgba(170,195,255,${0.08 * alpha})`);
+  g1.addColorStop(1.00, 'rgba(170,195,255,0)');
+
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = g1;
+  ctx.beginPath();
+  ctx.arc(x, y, r * 6, 0, TAU);
+  ctx.fill();
+  ctx.globalCompositeOperation = 'source-over';
+
+  const g2 = ctx.createRadialGradient(
+    x - r * 0.35, y - r * 0.35, 0,
+    x, y, r
+  );
+  g2.addColorStop(0.0, `rgba(255,255,255,${alpha})`);
+  g2.addColorStop(0.75, `rgba(226,233,250,${alpha * 0.95})`);
+  g2.addColorStop(1.0, `rgba(190,202,228,${alpha * 0.85})`);
+
+  ctx.fillStyle = g2;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, TAU);
+  ctx.fill();
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MAIN DRAW
+   ═══════════════════════════════════════════════════════════════ */
+function draw(timeSec) {
+  // ── sun geometry
+  const theta   = (dayTime - 0.25) * TAU;
+  const sunElev = Math.sin(theta);
+  const sunAz   = Math.cos(theta);
+
+  const sunX = W * (0.5 - sunAz * 0.42);
+  const sunY = horizonY - sunElev * H * 0.85;
+
+  const moonElev = -sunElev;
+  const moonX = W * (0.5 + sunAz * 0.42);
+  const moonY = horizonY + sunElev * H * 0.85;
+
+  // ── palettes
+  const skyPal   = sampleStops(SKY_STOPS, sunElev);
+  const cloudPal = sampleStops(CLOUD_STOPS, sunElev);
+
+  /* ---------- 1. SKY GRADIENT ---------- */
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb(skyPal.top));
+  g.addColorStop(clamp(vHorizon * 0.58, 0.10, 0.88), rgb(skyPal.mid));
+  g.addColorStop(clamp(vHorizon, 0.12, 0.97), rgb(skyPal.hor));
+  g.addColorStop(1, rgb(mixRGB(skyPal.hor, [0, 0, 0], 0.18)));
+
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  /* ---------- 2. SUNSET / SUNRISE HORIZON GLOW ---------- */
+  const glowStrength = smoothstep(-0.22, 0.10, sunElev);
+  if (glowStrength > 0.01) {
+    const warm = mixRGB([255, 118, 42], [255, 238, 205],
+                        clamp(sunElev / 0.28, 0, 1));
+    const gr = W * 0.95;
+    const hg = ctx.createRadialGradient(sunX, horizonY, 0, sunX, horizonY, gr);
+    hg.addColorStop(0.00, rgba(warm, 0.42 * glowStrength));
+    hg.addColorStop(0.28, rgba(warm, 0.14 * glowStrength));
+    hg.addColorStop(0.65, rgba(warm, 0.035 * glowStrength));
+    hg.addColorStop(1.00, rgba(warm, 0));
+
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = hg;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  /* ---------- 3. STARS ---------- */
+  const starAlpha = smoothstep(0.10, -0.14, sunElev);
+  if (starAlpha > 0.01 && starsReady) {
+    // gentle global twinkle
+    const tw = 0.92 + 0.08 * Math.sin(timeSec * 1.7);
+    ctx.globalAlpha = starAlpha * tw;
+    ctx.drawImage(starCanvas, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  }
+
+  /* ---------- 4. SUN & MOON ---------- */
+  if (sunElev > -0.16) {
+    drawSun(sunX, sunY, sunElev);
+  }
+  if (moonElev > -0.06) {
+    const moonAlpha = smoothstep(-0.06, 0.14, moonElev);
+    drawMoon(moonX, moonY, moonAlpha);
+  }
+
+  /* ---------- 5. CLOUDS ---------- */
+  const driftX = timeSec * 0.011;
+  const driftY = timeSec * 0.0028;
+
+  computeDensity(driftX, driftY);
+  shadeClouds(sunX, sunY, cloudPal, skyPal, sunElev);
+
+  ctx.drawImage(cloudCanvas, 0, 0, CW, CH, 0, 0, W, H);
+
+  /* ---------- 6. SUBTLE VIGNETTE ---------- */
+  const vg = ctx.createRadialGradient(
+    W * 0.5, H * 0.45, Math.min(W, H) * 0.30,
+    W * 0.5, H * 0.45, Math.max(W, H) * 0.78
+  );
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,0,0,0.22)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   LOOP
+   ═══════════════════════════════════════════════════════════════ */
+function frame(now) {
+  requestAnimationFrame(frame);
+
+  const ts = now * 0.001;
+  let dt = lastTs ? ts - lastTs : 0;
+  lastTs = ts;
+  if (dt > 0.05) dt = 0.05;         // clamp after tab-switch / stalls
+
+  if (playing) {
+    dayTime = (dayTime + dt / DAY_LENGTH) % 1;
+    timeEl.value = dayTime;
+  }
+
+  draw(ts);
+
+  // clock (only touch the DOM when the minute changes)
+  const totalMin = Math.floor(dayTime * 1440);
+  const hh = String(Math.floor(totalMin / 60) % 24).padStart(2, '0');
+  const mm = String(totalMin % 60).padStart(2, '0');
+  const str = hh + ':' + mm;
+  if (str !== clockCache) {
+    clockCache = str;
+    clockEl.textContent = str;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   UI
+   ═══════════════════════════════════════════════════════════════ */
+playEl.addEventListener('click', () => {
+  playing = !playing;
+  playEl.textContent = playing ? '❚❚' : '▶';
+});
+
+timeEl.addEventListener('input', () => {
+  dayTime = parseFloat(timeEl.value) || 0;
+});
+
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 120));
+
+/* ═══════════════════════════════════════════════════════════════
+   BOOT
+   ═══════════════════════════════════════════════════════════════ */
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

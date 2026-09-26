@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Vanilla WebGL — Vanta "Globe" style effect</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0e3d3d}
+  #c{width:100vw;height:100vh;display:block}
+  #hud{position:fixed;left:14px;bottom:12px;font:12px/1.5 monospace;color:#bfeee6;
+       opacity:.75;pointer-events:none;text-shadow:0 1px 2px #000}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">VANILLA WEBGL • globe effect (zero libraries)<br/>move mouse / finger to orbit the camera</div>
+
+<script>
+"use strict";
+/* ================= CONFIG (mirrors Vanta GLOBE defaults) ================= */
+const CFG = {
+  bg:        [0.05, 0.24, 0.24],      // dark teal, like the reference image
+  globeCol:  [0.85, 0.38, 0.22],      // coral / orange wireframe
+  gridN:     13,                      // 13x13 particle net
+  spacing:   11,
+  maxDist:   15.5,                    // connection distance
+  waveAmp:   2.6,
+  globeR:    24,
+  camDist:   170,
+  fov:       25 * Math.PI / 180
+};
+const TAU = Math.PI * 2;
+
+/* ================= GL SETUP ================= */
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl", {antialias:true, alpha:false})
+        || canvas.getContext("experimental-webgl");
+if(!gl){ document.getElementById("hud").textContent = "WebGL not supported :("; throw new Error("no webgl"); }
+
+const VS = `
+attribute vec3 aPos;
+attribute vec3 aColor;
+uniform mat4 uProj, uView, uModel;
+uniform float uPointScale;
+varying vec3 vColor;
+void main(){
+  vec4 mv = uView * uModel * vec4(aPos, 1.0);
+  gl_Position = uProj * mv;
+  gl_PointSize = clamp(uPointScale / max(1.0, -mv.z), 2.0, 28.0);
+  vColor = aColor;
+}`;
+const FS = `
+precision mediump float;
+uniform float uIsPoint;
+varying vec3 vColor;
+void main(){
+  float a = 1.0;
+  if(uIsPoint > 0.5){                 // round soft sprite for dots
+    vec2 c = gl_PointCoord - vec2(0.5);
+    float d = length(c);
+    if(d > 0.5) discard;
+    a = smoothstep(0.5, 0.1, d);
+  }
+  gl_FragColor = vec4(vColor * a, 1.0);   // additive: color adds over bg
+}`;
+
+function shader(type, src){
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
+gl.useProgram(prog);
+
+const A = { pos: gl.getAttribLocation(prog,"aPos"), col: gl.getAttribLocation(prog,"aColor") };
+const U = { proj: gl.getUniformLocation(prog,"uProj"), view: gl.getUniformLocation(prog,"uView"),
+            model: gl.getUniformLocation(prog,"uModel"), pts: gl.getUniformLocation(prog,"uPointScale"),
+            isPoint: gl.getUniformLocation(prog,"uIsPoint") };
+
+gl.disable(gl.DEPTH_TEST);                 // holographic look: everything adds, nothing occludes
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.ONE, gl.ONE);              // additive blending = the "glow"
+
+/* ================= TINY MAT4 LIB (column-major) ================= */
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];};
+function persp(fovy,asp,n,f){const t=1/Math.tan(fovy/2),nf=1/(n-f);
+  return [t/asp,0,0,0, 0,t,0,0, 0,0,(f+n)*nf,-1, 0,0,2*f*n*nf,0];}
+function lookAt(e,c,up){const z=norm(sub(e,c)),x=norm(cross(up,z)),y=cross(z,x);
+  return [x[0],y[0],z[0],0, x[1],y[1],z[1],0, x[2],y[2],z[2],0, -dot(x,e),-dot(y,e),-dot(z,e),1];}
+function mul(a,b){const o=new Array(16);
+  for(let c=0;c<4;c++)for(let r=0;r<4;r++)
+    o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];
+  return o;}
+const rotX=a=>{const c=Math.cos(a),s=Math.sin(a);return [1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1];};
+const rotY=a=>{const c=Math.cos(a),s=Math.sin(a);return [c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1];};
+const rotZ=a=>{const c=Math.cos(a),s=Math.sin(a);return [c,s,0,0, -s,c,0,0, 0,0,1,0, 0,0,0,1];};
+const trans=(x,y,z)=>[1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1];
+const rXv=(p,a)=>{const c=Math.cos(a),s=Math.sin(a);return [p[0],p[1]*c-p[2]*s,p[1]*s+p[2]*c];};
+const rZv=(p,a)=>{const c=Math.cos(a),s=Math.sin(a);return [p[0]*c-p[1]*s,p[0]*s+p[1]*c,p[2]];};
+
+/* ================= STATIC GEOMETRY ================= */
+function makeBuf(arr){const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);
+  gl.bufferData(gl.ARRAY_BUFFER,arr,gl.STATIC_DRAW);return b;}
+function colorsFor(pos,rgb,k){const c=new Float32Array(pos.length);
+  for(let i=0;i<c.length;i+=3){c[i]=rgb[0]*k;c[i+1]=rgb[1]*k;c[i+2]=rgb[2]*k;}return c;}
+
+/* -- triangulated wireframe sphere (like EdgesGeometry) -- */
+const spherePos=[];
+(function(){
+  const W=22,H=15,R=CFG.globeR,P=[];
+  for(let iy=0;iy<=H;iy++){P[iy]=[];
+    for(let ix=0;ix<=W;ix++){
+      const th=iy/H*Math.PI, ph=ix/W*TAU;
+      P[iy][ix]=[R*Math.sin(th)*Math.cos(ph), R*Math.cos(th), R*Math.sin(th)*Math.sin(ph)];
+    }}
+  const seg=(p,q)=>spherePos.push(...p,...q);
+  for(let iy=0;iy<H;iy++)for(let ix=0;ix<W;ix++){
+    seg(P[iy][ix],P[iy][ix+1]);       // latitude edge
+    seg(P[iy][ix],P[iy+1][ix]);       // longitude edge
+    seg(P[iy][ix],P[iy+1][ix+1]);     // diagonal -> triangulated look
+  }
+})();
+const globeBufP=makeBuf(new Float32Array(spherePos));
+const globeBufC=makeBuf(colorsFor(spherePos,CFG.globeCol,1));
+const globeCount=spherePos.length/3;
+
+/* -- white orbit rings + random radial streaks -- */
+const orbitPos=[];
+function addCircle(R,seg,tx,tz){
+  for(let i=0;i<seg;i++){
+    let p1=[Math.cos(i/seg*TAU)*R,0,Math.sin(i/seg*TAU)*R];
+    let p2=[Math.cos((i+1)/seg*TAU)*R,0,Math.sin((i+1)/seg*TAU)*R];
+    p1=rZv(rXv(p1,tx),tz); p2=rZv(rXv(p2,tx),tz);
+    orbitPos.push(...p1,...p2);
+  }}
+addCircle(34,120, 1.9,  0.5);
+addCircle(42,120, 1.2, -0.7);
+addCircle(50,120, 0.5,  1.2);
+for(let i=0;i<80;i++){                       // the dashed halo streaks
+  const r1=CFG.globeR+2+Math.random()*6, r2=r1+2+Math.random()*6;
+  const u=Math.random()*2-1, th=Math.random()*TAU, s=Math.sqrt(1-u*u);
+  const d=[s*Math.cos(th),u,s*Math.sin(th)];
+  orbitPos.push(d[0]*r1,d[1]*r1,d[2]*r1, d[0]*r2,d[1]*r2,d[2]*r2);
+}
+const orbitBufP=makeBuf(new Float32Array(orbitPos));
+const orbitBufC=makeBuf(colorsFor(orbitPos,[1,1,1],0.55));
+const orbitCount=orbitPos.length/3;
+
+/* -- vertical "field line" cage (like Vanta's linesMesh3) -- */
+const cagePos=[0,39,0, 0,-39,0];
+[17.9,12,8,5,3,2,1.5,1.1,.8,.6,.45,.3,.2,.1,.05,.03,.02,.01].forEach((o,idx)=>{
+  const n=6*(idx+1)*1.3;
+  for(let a=0;a<4;a++){
+    const dx=Math.cos(a/4*TAU)*0.15, dz=Math.sin(a/4*TAU)*0.15;
+    cagePos.push(dx*n,o*1.3,dz*n, dx*n,-o*1.3,dz*n);
+  }});
+const cageBufP=makeBuf(new Float32Array(cagePos));
+const cageBufC=makeBuf(colorsFor(cagePos,[1,1,1],0.45));
+const cageCount=cagePos.length/3;
+
+/* -- screen crosshair axes -- */
+const crossPos=[0,-55,0, 0,55,0,  -75,0,0, 75,0,0];
+const crossBufP=makeBuf(new Float32Array(crossPos));
+const crossBufC=makeBuf(crossPos,[1,1,1],0.8);
+
+/* ================= DYNAMIC NET (dots + proximity lines) ================= */
+const pts=[];
+for(let ix=0;ix<CFG.gridN;ix++)for(let iz=0;iz<CFG.gridN;iz++)
+  pts.push({ox:(ix-(CFG.gridN-1)/2)*CFG.spacing, oz:(iz-(CFG.gridN-1)/2)*CFG.spacing, y:0});
+
+const dotPos=new Float32Array(pts.length*3);
+const dotCol=new Float32Array(pts.length*3).fill(0.95);
+const dotBufP=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,dotBufP);
+  gl.bufferData(gl.ARRAY_BUFFER,dotPos,gl.DYNAMIC_DRAW);
+const dotBufC=makeBuf(dotCol);
+
+const MAXSEG=2048;
+const linePos=new Float32Array(MAXSEG*6), lineCol=new Float32Array(MAXSEG*6);
+const lineBufP=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,lineBufP);
+  gl.bufferData(gl.ARRAY_BUFFER,linePos,gl.DYNAMIC_DRAW);
+const lineBufC=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,lineBufC);
+  gl.bufferData(gl.ARRAY_BUFFER,lineCol,gl.DYNAMIC_DRAW);
+
+/* ================= CAMERA / INPUT ================= */
+let theta=1.2, phi=0.55, thetaT=theta, phiT=phi;
+function point(e){const x=e.clientX/innerWidth,y=e.clientY/innerHeight;
+  thetaT=1.2+(x-0.5)*1.6; phiT=0.55+(y-0.5)*0.9;}
+addEventListener("mousemove",point);
+addEventListener("touchmove",e=>{point(e.touches[0]);e.preventDefault();},{passive:false});
+
+function resize(){
+  const dpr=Math.min(devicePixelRatio||1,2);
+  canvas.width=innerWidth*dpr; canvas.height=innerHeight*dpr;
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.uniformMatrix4fv(U.proj,false,new Float32Array(persp(CFG.fov,canvas.width/canvas.height,1,2000)));
+  gl.uniform1f(U.pts, canvas.height/(2*Math.tan(CFG.fov/2))*0.8);
+}
+addEventListener("resize",resize); resize();
+
+function bind(buf,loc){gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,3,gl.FLOAT,false,0,0);}
+function draw(bp,bc,n,mode,model,isPoint){
+  gl.uniformMatrix4fv(U.model,false,new Float32Array(model));
+  gl.uniform1f(U.isPoint,isPoint?1:0);
+  bind(bp,A.pos); bind(bc,A.col);
+  gl.drawArrays(mode,0,n);
+}
+
+/* ================= MAIN LOOP ================= */
+function frame(now){
+  const t=now*0.001;
+  theta+=(thetaT-theta)*0.03; phi+=(phiT-phi)*0.03;   // eased mouse orbit (like Vanta)
+  const eye=[Math.cos(phi)*Math.sin(theta)*CFG.camDist,
+             Math.sin(phi)*CFG.camDist,
+             Math.cos(phi)*Math.cos(theta)*CFG.camDist];
+  gl.uniformMatrix4fv(U.view,false,new Float32Array(lookAt(eye,[0,0,0],[0,1,0])));
+  gl.clearColor(CFG.bg[0],CFG.bg[1],CFG.bg[2],1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  /* wave + proximity connections (the O(n²) part, but only 169 pts → trivial) */
+  for(let i=0;i<pts.length;i++){const p=pts[i];
+    p.y=CFG.waveAmp*Math.sin(p.ox*0.09+t*1.1+p.oz*0.045);
+    dotPos[i*3]=p.ox; dotPos[i*3+1]=p.y; dotPos[i*3+2]=p.oz;}
+  let li=0;
+  for(let i=0;i<pts.length;i++){const a=pts[i];
+    for(let j=i+1;j<pts.length;j++){const b=pts[j];
+      const dx=a.ox-b.ox; if(dx>CFG.maxDist||dx<-CFG.maxDist)continue;
+      const dz=a.oz-b.oz; if(dz>CFG.maxDist||dz<-CFG.maxDist)continue;
+      const dy=a.y-b.y, d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+      if(d<CFG.maxDist&&li<MAXSEG){
+        const f=(1-d/CFG.maxDist)*0.7;
+        linePos.set([a.ox,a.y,a.oz,b.ox,b.y,b.oz],li*6);
+        lineCol.set([f,f,f,f,f,f],li*6); li++;}
+    }}
+  gl.bindBuffer(gl.ARRAY_BUFFER,dotBufP); gl.bufferSubData(gl.ARRAY_BUFFER,0,dotPos);
+  gl.bindBuffer(gl.ARRAY_BUFFER,lineBufP);gl.bufferSubData(gl.ARRAY_BUFFER,0,linePos.subarray(0,li*6));
+  gl.bindBuffer(gl.ARRAY_BUFFER,lineBufC);gl.bufferSubData(gl.ARRAY_BUFFER,0,lineCol.subarray(0,li*6));
+
+  const mNet  = trans(0,-16,0);
+  const mGlobe= mul(trans(0,4,0), rotY(t*0.15));
+  const mOrb  = mul(trans(0,4,0), mul(rotZ(t*0.12), rotX(t*0.05)));
+  const mCage = mul(trans(0,4,0), rotY(-t*0.2));
+  const mId   = trans(0,0,0);
+
+  draw(lineBufP,lineBufC, li*2,        gl.LINES,  mNet,  false);
+  draw(dotBufP, dotBufC,  pts.length,  gl.POINTS, mNet,  true );
+  draw(globeBufP,globeBufC,globeCount, gl.LINES,  mGlobe,false);
+  draw(orbitBufP,orbitBufC,orbitCount, gl.LINES,  mOrb,  false);
+  draw(cageBufP,cageBufC,cageCount,    gl.LINES,  mCage, false);
+  draw(crossBufP,crossBufC,4,          gl.LINES,  mId,   false);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

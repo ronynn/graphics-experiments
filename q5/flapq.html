@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flappy Cube (q5.js)</title>
+    <!-- Load q5.js from CDN -->
+    <script src="q5.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; overflow: hidden; background: #333; display: flex; justify-content: center; align-items: center; height: 100vh; }
+        canvas { box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+<script>
+// q5.js automatically runs setup() and draw()
+
+let bird;
+let pipes;
+let particles;
+let score;
+let gameOver;
+let audioCtx;
+
+function setup() {
+    createCanvas(320, 480);
+    resetGame();
+    
+    // Initialize Audio on first user interaction (browser policy)
+    userStartAudio();
+}
+
+function userStartAudio() {
+    if (!audioCtx) {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (AudioContext) audioCtx = new AudioContext();
+    }
+}
+
+function resetGame() {
+    bird = { x: 50, y: height / 2, w: 20, h: 20, dy: 0, gravity: 0.25, jump: -4.5 };
+    pipes = [];
+    particles = [];
+    score = 0;
+    gameOver = false;
+    frameCount = 0;
+    spawnPipe();
+}
+
+function spawnPipe() {
+    let gap = 100;
+    let minHeight = 50;
+    let maxPipe = height - gap - minHeight;
+    let topHeight = random(minHeight, maxPipe);
+    pipes.push({ x: width, top: topHeight, gap: gap, w: 40, passed: false });
+}
+
+function createParticles(x, y, color) {
+    for (let i = 0; i < 20; i++) {
+        particles.push({
+            x: x, y: y,
+            dx: random(-2, 2),
+            dy: random(-2, 2),
+            life: 1.0,
+            color: color
+        });
+    }
+}
+
+function playSound(freq, type, duration) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.value = freq;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    gain.gain.setTargetAtTime(0, audioCtx.currentTime, duration / 4);
+    osc.stop(audioCtx.currentTime + duration);
+}
+
+// This function handles both Mouse Clicks and Touches automatically in q5/p5
+function mousePressed() {
+    userStartAudio(); // Ensure audio context is ready
+    if (gameOver) {
+        resetGame();
+    } else {
+        bird.dy = bird.jump;
+        playSound(400, 'square', 0.1);
+    }
+    return false; // Prevent default browser scrolling
+}
+
+function keyPressed() {
+    if (key === ' ' || keyCode === UP_ARROW) {
+        mousePressed();
+    }
+}
+
+function draw() {
+    background(70, 197, 206); // Sky blue
+
+    if (!gameOver) {
+        // Bird Physics
+        bird.dy += bird.gravity;
+        bird.y += bird.dy;
+
+        // Pipe Logic
+        if (frameCount % 90 === 0) spawnPipe();
+
+        for (let i = pipes.length - 1; i >= 0; i--) {
+            let p = pipes[i];
+            p.x -= 2;
+
+            // Collision Detection
+            if (bird.x < p.x + p.w && bird.x + bird.w > p.x &&
+                (bird.y < p.top || bird.y + bird.h > p.top + p.gap)) {
+                gameOver = true;
+                createParticles(bird.x + bird.w/2, bird.y + bird.h/2, '#ff0000');
+                playSound(150, 'sawtooth', 0.3);
+            }
+
+            // Score
+            if (p.x + p.w < bird.x && !p.passed) {
+                score++;
+                p.passed = true;
+                playSound(600, 'sine', 0.1);
+            }
+
+            if (p.x + p.w < 0) pipes.splice(i, 1);
+        }
+
+        // Floor/Ceiling Collision
+        if (bird.y + bird.h > height || bird.y < 0) {
+            gameOver = true;
+            createParticles(bird.x, bird.y, '#ff0000');
+            playSound(100, 'sawtooth', 0.5);
+        }
+    } else {
+        // Update Particles only if game over
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.dx;
+            p.y += p.dy;
+            p.life -= 0.02;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+    }
+
+    // Draw Pipes
+    fill(46, 125, 50);
+    stroke(27, 94, 32);
+    strokeWeight(2);
+    for (let p of pipes) {
+        rect(p.x, 0, p.w, p.top);
+        rect(p.x, p.top + p.gap, p.w, height - (p.top + p.gap));
+    }
+
+    // Draw Bird (if not game over)
+    if (!gameOver) {
+        fill(255, 235, 59);
+        stroke(0);
+        strokeWeight(2);
+        rect(bird.x, bird.y, bird.w, bird.h);
+    }
+
+    // Draw Particles
+    noStroke();
+    for (let p of particles) {
+        fill(p.color);
+        rect(p.x, p.y, 4, 4);
+    }
+
+    // Draw Score
+    fill(255);
+    stroke(0);
+    strokeWeight(3);
+    textSize(20);
+    textAlign(LEFT, TOP);
+    text("Score: " + score, 10, 10);
+
+    // Game Over Screen
+    if (gameOver) {
+        fill(0, 150);
+        noStroke();
+        rect(0, 0, width, height);
+        
+        fill(255);
+        textAlign(CENTER, CENTER);
+        textSize(30);
+        text("Game Over", width / 2, height / 2 - 10);
+        textSize(16);
+        text("Click to Restart", width / 2, height / 2 + 20);
+    }
+}
+</script>
+
+</body>
+</html>   
