@@ -3,14 +3,14 @@ Fiddling around with shaders and graphics libraries
 <hr>
 
 Day Night Cycles, the second example forms the core of [atmos-xr](https://github.com/ronynn/atmos-xr), an android livewallpaper app, long press top region of the page for 4 seconds to move through time:
-- <https://ronynn.github.io/prototypes/daynight.html>
-- <https://ronynn.github.io/prototypes/dawndusk.html>
+- <https://ronynn.github.io/graphics-experiments/daynight.html>
+- <https://ronynn.github.io/graphics-experiments/dawndusk.html>
 
-Q5 is a minimalist WEBGPU supported port of P5.js library of the Processing Foundation: [Q5 Examples](https://ronynn.github.io/prototypes/q5/index.html)
+Q5 is a minimalist WEBGPU supported port of P5.js library of the Processing Foundation: [Q5 Examples](https://ronynn.github.io/graphics-experiments/q5/index.html)
 
-These examples were tested on OpenGL-ES: [GLSL Runner](https://ronynn.github.io/prototypes/glsl/index.html)
+These examples were tested on OpenGL-ES: [GLSL Runner](https://ronynn.github.io/graphics-experiments/glsl/index.html)
 
-Homepage Globe: <https://ronynn.github.io/prototypes/globe.html>
+Homepage Globe: <https://ronynn.github.io/graphics-experiments/globe.html>
 
 
 <hr>
