@@ -1,0 +1,5 @@
+
+**/lib/** linguist-vendored
+
+# Lol data
+*.html linguist-language=Processing
